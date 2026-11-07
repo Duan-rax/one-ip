@@ -36,9 +36,31 @@ jobs:
             echo 'Only direct forks of zhihui-hu/one-ip are synchronized.'
             exit 0
           fi
+
           before=$(gh api "repos/$REPO/commits/$branch" --jq '.sha')
-          # The GitHub merge-upstream endpoint fails on conflicts; no force reset.
-          gh api --method POST "repos/$REPO/merge-upstream" -f branch="$branch"
+          sync_log=$(mktemp)
+          trap 'rm -f "$sync_log"' EXIT
+
+          # GITHUB_TOKEN cannot update workflow files. Treat that known limitation
+          # as a manual-sync notice, while preserving failures for all other errors.
+          if gh api --method POST "repos/$REPO/merge-upstream" -f branch="$branch" >"$sync_log" 2>&1; then
+            cat "$sync_log"
+          else
+            status=$?
+            cat "$sync_log" >&2
+            if grep -Fq 'without `workflows` permission' "$sync_log"; then
+              echo '::warning title=Manual fork sync required::Upstream changed a GitHub Actions workflow. Use Sync fork in the GitHub UI to apply it.'
+              {
+                echo '### Manual fork sync required'
+                echo
+                echo 'Upstream changed a file under `.github/workflows/`, which the built-in `GITHUB_TOKEN` is not allowed to update.'
+                echo 'Open the repository on GitHub and choose **Sync fork → Update branch**.'
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            exit "$status"
+          fi
+
           after=$(gh api "repos/$REPO/commits/$branch" --jq '.sha')
           if [ "$before" != "$after" ] && [ "$ENABLE_CF_DEPLOY" = 'true' ]; then
             # GITHUB_TOKEN pushes do not trigger push workflows. Dispatch explicitly.
